@@ -18,13 +18,11 @@ env:
   CONFIGURATION: "Release"
   RUNTIME: "win-x64"
 
-  # Paths do projeto
   ZP_SOLUTION: "tools/ZaldoPrinter/ZaldoPrinter.sln"
   ZP_SERVICE_PROJECT: "tools/ZaldoPrinter/src/ZaldoPrinter.Service/ZaldoPrinter.Service.csproj"
   ZP_CONFIG_PROJECT: "tools/ZaldoPrinter/src/ZaldoPrinter.ConfigApp/ZaldoPrinter.ConfigApp.csproj"
   ZP_INNO_SCRIPT: "tools/ZaldoPrinter/installer/ZaldoPrinter.iss"
 
-  # Pastas esperadas pelo .iss
   ZP_PUBLISH_DIR: "tools/ZaldoPrinter/out/publish"
   ZP_INSTALLER_DIR: "tools/ZaldoPrinter/out/installer"
 
@@ -44,7 +42,8 @@ jobs:
       - name: Restore (solution)
         run: dotnet restore "${{ env.ZP_SOLUTION }}"
 
-      - name: Publish Service (win-x64) -> tools/ZaldoPrinter/out/publish
+      - name: Publish Service (win-x64)
+        shell: pwsh
         run: >
           dotnet publish "${{ env.ZP_SERVICE_PROJECT }}"
           -c ${{ env.CONFIGURATION }}
@@ -53,9 +52,9 @@ jobs:
           /p:PublishSingleFile=true
           /p:IncludeNativeLibrariesForSelfExtract=true
           -o "${{ env.ZP_PUBLISH_DIR }}"
-        shell: pwsh
 
-      - name: Publish ConfigApp (win-x64) -> tools/ZaldoPrinter/out/publish
+      - name: Publish ConfigApp (win-x64)
+        shell: pwsh
         run: >
           dotnet publish "${{ env.ZP_CONFIG_PROJECT }}"
           -c ${{ env.CONFIGURATION }}
@@ -64,7 +63,6 @@ jobs:
           /p:PublishSingleFile=true
           /p:IncludeNativeLibrariesForSelfExtract=true
           -o "${{ env.ZP_PUBLISH_DIR }}"
-        shell: pwsh
 
       - name: Remove debug symbols (.pdb)
         shell: pwsh
@@ -76,6 +74,13 @@ jobs:
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup -y
+
+      - name: Debug .iss (lines 1-120)
+        shell: pwsh
+        run: |
+          $p = "${{ env.ZP_INNO_SCRIPT }}"
+          Write-Host "=== SHOWING $p (first 120 lines) ==="
+          Get-Content $p | Select-Object -First 120 | ForEach-Object { Write-Host $_ }
 
       - name: Build Installer (ISCC)
         shell: pwsh
@@ -89,7 +94,9 @@ jobs:
         run: |
           $setup = Join-Path "${{ env.ZP_INSTALLER_DIR }}" "ZaldoPrinterSetup.exe"
           if (!(Test-Path $setup)) {
-            Write-Host "Contents of installer dir:"
+            Write-Host "Publish dir contents:"
+            Get-ChildItem -Force "${{ env.ZP_PUBLISH_DIR }}" -ErrorAction SilentlyContinue
+            Write-Host "Installer dir contents:"
             Get-ChildItem -Force "${{ env.ZP_INSTALLER_DIR }}" -ErrorAction SilentlyContinue
             throw "Installer not found: $setup"
           }
@@ -110,7 +117,7 @@ jobs:
             tools/ZaldoPrinter/out/installer/ZaldoPrinterSetup.exe.sha256
 
   release:
-    # Troca para 'refs/tags/v' se você prefere v1.0.0
+    # usa tag zp-v1.0.0. Se você quiser v1.0.0, mude para refs/tags/v
     if: startsWith(github.ref, 'refs/tags/zp-v')
     needs: build
     runs-on: windows-latest
