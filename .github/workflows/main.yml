@@ -17,9 +17,16 @@ env:
   DOTNET_VERSION: "8.0.x"
   CONFIGURATION: "Release"
   RUNTIME: "win-x64"
-  # ✅ AJUSTE ESTE PATH para o csproj principal do serviço
-  ZALDO_PRINTER_PROJECT: "tools/ZaldoPrinter/src/ZaldoPrinter.Service/ZaldoPrinter.Service.csproj"
-  ARTIFACT_NAME: "ZaldoPrinter-win-x64"
+
+  # Paths do projeto
+  ZP_SOLUTION: "tools/ZaldoPrinter/ZaldoPrinter.sln"
+  ZP_SERVICE_PROJECT: "tools/ZaldoPrinter/src/ZaldoPrinter.Service/ZaldoPrinter.Service.csproj"
+  ZP_CONFIG_PROJECT: "tools/ZaldoPrinter/src/ZaldoPrinter.ConfigApp/ZaldoPrinter.ConfigApp.csproj"
+  ZP_INNO_SCRIPT: "tools/ZaldoPrinter/installer/ZaldoPrinter.iss"
+
+  # Pastas esperadas pelo .iss
+  ZP_PUBLISH_DIR: "tools/ZaldoPrinter/out/publish"
+  ZP_INSTALLER_DIR: "tools/ZaldoPrinter/out/installer"
 
 jobs:
   build:
@@ -34,61 +41,92 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Restore
-        run: dotnet restore "${{ env.ZALDO_PRINTER_PROJECT }}"
+      - name: Restore (solution)
+        run: dotnet restore "${{ env.ZP_SOLUTION }}"
 
-      - name: Build
-        run: dotnet build "${{ env.ZALDO_PRINTER_PROJECT }}" -c ${{ env.CONFIGURATION }} --no-restore
-
-      # Se tiver testes, ele roda. Se não tiver, não falha.
-      - name: Test (if present)
-        shell: pwsh
-        run: |
-          $sln = Get-ChildItem -Recurse -Filter *.sln | Select-Object -First 1
-          if ($null -ne $sln) {
-            dotnet test $sln.FullName -c $env:CONFIGURATION --no-build
-          } else {
-            Write-Host "No solution (.sln) found; skipping tests."
-          }
-
-      - name: Publish (self-contained)
+      - name: Publish Service (win-x64) -> tools/ZaldoPrinter/out/publish
         run: >
-          dotnet publish "${{ env.ZALDO_PRINTER_PROJECT }}"
+          dotnet publish "${{ env.ZP_SERVICE_PROJECT }}"
           -c ${{ env.CONFIGURATION }}
           -r ${{ env.RUNTIME }}
           --self-contained true
           /p:PublishSingleFile=true
           /p:IncludeNativeLibrariesForSelfExtract=true
-          -o "out/${{ env.ARTIFACT_NAME }}"
+          -o "${{ env.ZP_PUBLISH_DIR }}"
+        shell: pwsh
 
-      - name: Upload artifact
+      - name: Publish ConfigApp (win-x64) -> tools/ZaldoPrinter/out/publish
+        run: >
+          dotnet publish "${{ env.ZP_CONFIG_PROJECT }}"
+          -c ${{ env.CONFIGURATION }}
+          -r ${{ env.RUNTIME }}
+          --self-contained true
+          /p:PublishSingleFile=true
+          /p:IncludeNativeLibrariesForSelfExtract=true
+          -o "${{ env.ZP_PUBLISH_DIR }}"
+        shell: pwsh
+
+      - name: Remove debug symbols (.pdb)
+        shell: pwsh
+        run: |
+          if (Test-Path "${{ env.ZP_PUBLISH_DIR }}") {
+            Get-ChildItem -Path "${{ env.ZP_PUBLISH_DIR }}" -Recurse -Filter *.pdb | Remove-Item -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y
+
+      - name: Build Installer (ISCC)
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) { throw "ISCC not found at $iscc" }
+          & $iscc "${{ env.ZP_INNO_SCRIPT }}"
+
+      - name: Verify installer exists
+        shell: pwsh
+        run: |
+          $setup = Join-Path "${{ env.ZP_INSTALLER_DIR }}" "ZaldoPrinterSetup.exe"
+          if (!(Test-Path $setup)) {
+            Write-Host "Contents of installer dir:"
+            Get-ChildItem -Force "${{ env.ZP_INSTALLER_DIR }}" -ErrorAction SilentlyContinue
+            throw "Installer not found: $setup"
+          }
+
+      - name: Generate SHA256
+        shell: pwsh
+        run: |
+          $setup = Join-Path "${{ env.ZP_INSTALLER_DIR }}" "ZaldoPrinterSetup.exe"
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path (Join-Path "${{ env.ZP_INSTALLER_DIR }}" "ZaldoPrinterSetup.exe.sha256") -Value $hash
+
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARTIFACT_NAME }}
-          path: out/${{ env.ARTIFACT_NAME }}/
+          name: ZaldoPrinterSetup
+          path: |
+            tools/ZaldoPrinter/out/installer/ZaldoPrinterSetup.exe
+            tools/ZaldoPrinter/out/installer/ZaldoPrinterSetup.exe.sha256
 
   release:
-    # Só cria release quando você taggear vX.Y.Z
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Troca para 'refs/tags/v' se você prefere v1.0.0
+    if: startsWith(github.ref, 'refs/tags/zp-v')
     needs: build
     runs-on: windows-latest
 
     steps:
-      - name: Download artifact
+      - name: Download installer artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ env.ARTIFACT_NAME }}
-          path: "release/${{ env.ARTIFACT_NAME }}"
-
-      - name: Zip artifact
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path "release/${{ env.ARTIFACT_NAME }}/*" -DestinationPath "dist/${{ env.ARTIFACT_NAME }}.zip" -Force
+          name: ZaldoPrinterSetup
+          path: dist
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/${{ env.ARTIFACT_NAME }}.zip
+          files: |
+            dist/ZaldoPrinterSetup.exe
+            dist/ZaldoPrinterSetup.exe.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
